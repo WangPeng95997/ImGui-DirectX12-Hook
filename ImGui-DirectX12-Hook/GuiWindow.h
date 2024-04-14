@@ -9,8 +9,8 @@
 #define AUTHORINFO          "Build.20xx.xx.xx\nby l4kkS41"	
 
 #define WINDOWNAME          "ImGui Window"
-#define MAJORVERSION        0
-#define MINORVERSION        1
+#define MAJORVERSION        1
+#define MINORVERSION        0
 #define REVISIONVERSION     0
 
 #define TARGETCLASS         "gfx_test"
@@ -20,37 +20,37 @@
 #define WIDTH               600
 #define HEIGHT              400
 
-#define VK_M                0x4D
-
-enum WindowStatus : DWORD
-{
-    Normal      = 0,
-    Repaint     = 1 << 0,
-    Exit        = 1 << 1
-};
+typedef unsigned __int64 QWORD;
 
 class GuiWindow
 {
 public:
-    char*       fontPath;
-    char*       windowName;
-    HWND        hwnd;
-    HANDLE      hProcess;
+    enum GuiStatus : DWORD
+    {
+        Reset = 1 << 0,
+        Exit = 1 << 1,
+        Detach = 1 << 2
+    };
+
+    HWND        hWnd;
     HMODULE     hModule;
-    LPBYTE      baseAddress;
+    HANDLE      hProcess;
+    PCHAR       FontPath;
+    PCHAR       WindowName;
+    LPBYTE      ModuleAddress;
     LPBYTE      lpBuffer;
-    DWORD       windowStatus;
-    ImVec2      startPostion;
-    bool        showMenu;
-    bool        crossHair;
+    ImVec2      StartPostion;
+    DWORD       UIStatus;
+    bool        bCrosshair;
+    bool        bShowMenu;
 
     GuiWindow();
     ~GuiWindow();
 
     void Init();
-    void Repaint();
     void Update();
 
     void Button_Exit();
-    void Toggle_CrossHair(const bool& isEnable);
+
+    void Toggle_Crosshair(const bool& isEnable);
 };

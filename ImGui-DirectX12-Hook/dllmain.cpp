@@ -1,8 +1,8 @@
 ﻿#include <dxgi.h>
 #include <dxgi1_4.h>
 #include <d3d12.h>
-#include "mainwindow.h"
-#include "MinHook.h"
+#include "GuiWindow.h"
+#include "MinHook/include/MinHook.h"
 #pragma comment(lib, "d3d12.lib")
 
 typedef struct TagFrameContext
@@ -10,7 +10,7 @@ typedef struct TagFrameContext
     ID3D12CommandAllocator* d3d12CommandAllocator;
     ID3D12Resource* mainRenderTargetResource;
     D3D12_CPU_DESCRIPTOR_HANDLE d3d12DescriptorHandle;
-}FrameContext, * LPFrameContext;
+}FrameContext;
 
 extern LRESULT ImGui_ImplWin32_WndProcHandler(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam);
 typedef HRESULT(WINAPI* ExecuteCommandLists)(ID3D12CommandQueue* pCommandQueue, UINT NumCommandLists, ID3D12CommandList* const* ppCommandLists);
@@ -19,75 +19,74 @@ typedef HRESULT(WINAPI* ResizeBuffers)(IDXGISwapChain* pSwapChain, UINT BufferCo
 HRESULT WINAPI HK_ExecuteCommandLists(ID3D12CommandQueue* pCommandQueue, UINT NumCommandLists, ID3D12CommandList* const* ppCommandLists);
 HRESULT WINAPI HK_Present(IDXGISwapChain3* pSwapChain, UINT SyncInterval, UINT Flags);
 HRESULT WINAPI HK_ResizeBuffers(IDXGISwapChain* pSwapChain, UINT BufferCount, UINT Width, UINT Height, DXGI_FORMAT NewFormat, UINT SwapChainFlags);
-LRESULT WINAPI HK_WndProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam);
+LRESULT WINAPI HK_WndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam);
 
 ExecuteCommandLists Original_ExecuteCommandLists;
 Present Original_Present;
 ResizeBuffers Original_ResizeBuffers;
 WNDPROC Original_WndProc;
-HWND g_mainWindow;
-HMODULE g_hHinstance;
+HMODULE g_hInstance;
 HANDLE g_hEndEvent;
-DWORD64* g_methodsTable;
+LPVOID g_lpVirtualTable;
 GuiWindow* g_GuiWindow;
-FrameContext* g_frameContext;
-ID3D12Device* g_dx12Device;
-ID3D12DescriptorHeap* g_dx12DescHeapBackBuffers;
-ID3D12DescriptorHeap* g_dx12DescHeapImGuiRender;
-ID3D12GraphicsCommandList* g_dx12CommandList;
-ID3D12CommandQueue* g_dx12CommandQueue;
-int g_bufferCounts = 0;
-bool g_ImGuiInit = false;
+FrameContext* g_pFrameContext;
+ID3D12Device* g_pDX12Device;
+ID3D12DescriptorHeap* g_pDX12DescHeapBackBuffers;
+ID3D12DescriptorHeap* g_pDX12DescHeapImGuiRender;
+ID3D12GraphicsCommandList* g_pDX12CommandList;
+ID3D12CommandQueue* g_pDX12CommandQueue;
+int g_nBufferCounts = 0;
 
 void InitHook()
 {
+    QWORD* lpVTable = (QWORD*)g_lpVirtualTable;
     MH_Initialize();
 
     // ExecuteCommandLists
-    int index = 54;
-    void* pTarget = (void*)g_methodsTable[index];
-    MH_CreateHook(pTarget, HK_ExecuteCommandLists, (void**)&Original_ExecuteCommandLists);
-    MH_EnableHook(pTarget);
+    LPVOID lpTarget = (LPVOID)lpVTable[54];
+    MH_CreateHook(lpTarget, HK_ExecuteCommandLists, (void**)&Original_ExecuteCommandLists);
+    MH_EnableHook(lpTarget);
 
     // Present
-    index = 140;
-    pTarget = (void*)g_methodsTable[index];
-    MH_CreateHook(pTarget, HK_Present, (void**)&Original_Present);
-    MH_EnableHook(pTarget);
+    lpTarget = (LPVOID)lpVTable[140];
+    MH_CreateHook(lpTarget, HK_Present, (void**)&Original_Present);
+    MH_EnableHook(lpTarget);
 
     // ResizeBuffers
-    //index = 145;
-    //pTarget = (void*)g_methodsTable[index];
-    //MH_CreateHook(pTarget, HK_ResizeBuffers, (void**)&Original_ResizeBuffers);
-    //MH_EnableHook(pTarget);
+    //lpTarget = (LPVOID)lpVTable[145];
+    //MH_CreateHook(lpTarget, HK_ResizeBuffers, (void**)&Original_ResizeBuffers);
+    //MH_EnableHook(lpTarget);
 }
 
 void ReleaseHook()
 {
+    ::SetWindowLongPtr(g_GuiWindow->hWnd, GWLP_WNDPROC, (LONG_PTR)Original_WndProc);
     MH_DisableHook(MH_ALL_HOOKS);
-    SetWindowLongPtr(g_mainWindow, GWLP_WNDPROC, (LONG_PTR)Original_WndProc);
 
     ImGui_ImplDX12_Shutdown();
     ImGui_ImplWin32_Shutdown();
     ImGui::DestroyContext();
 
-    g_dx12Device->Release();
-    g_dx12DescHeapBackBuffers->Release();
-    g_dx12DescHeapImGuiRender->Release();
-    g_dx12CommandList->Release();
-    g_dx12CommandQueue->Release();
-    delete g_frameContext;
-    ::free(g_methodsTable);
+    g_pDX12Device->Release();
+    g_pDX12DescHeapBackBuffers->Release();
+    g_pDX12DescHeapImGuiRender->Release();
+    g_pDX12CommandList->Release();
+    g_pDX12CommandQueue->Release();
+
+    delete[] g_pFrameContext;
+    ::free(g_lpVirtualTable);
+    g_lpVirtualTable = nullptr;
+
     ::SetEvent(g_hEndEvent);
 }
 
-LRESULT WINAPI HK_WndProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
+LRESULT WINAPI HK_WndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
 {
     switch (uMsg)
     {
     case WM_KEYDOWN:
-        if (wParam == VK_M)
-            g_GuiWindow->showMenu = !g_GuiWindow->showMenu;
+        if (wParam == VK_INSERT)
+            g_GuiWindow->bShowMenu = !g_GuiWindow->bShowMenu;
         break;
 
     case WM_DESTROY:
@@ -95,19 +94,18 @@ LRESULT WINAPI HK_WndProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
         break;
     }
 
-    if (g_GuiWindow->showMenu && ImGui_ImplWin32_WndProcHandler(hwnd, uMsg, wParam, lParam))
+    if (g_GuiWindow->bShowMenu && ImGui_ImplWin32_WndProcHandler(hWnd, uMsg, wParam, lParam))
         return true;
 
-    return CallWindowProc(Original_WndProc, hwnd, uMsg, wParam, lParam);
+    return ::CallWindowProc(Original_WndProc, hWnd, uMsg, wParam, lParam);
 }
-
 
 inline void InitImGui()
 {
     ImGui::CreateContext();
     ImGuiIO& io = ImGui::GetIO();
     io.ConfigFlags = ImGuiConfigFlags_NoMouseCursorChange;
-    io.Fonts->AddFontFromFileTTF(g_GuiWindow->fontPath, 20.0f, nullptr, io.Fonts->GetGlyphRangesChineseFull());
+    io.Fonts->AddFontFromFileTTF(g_GuiWindow->FontPath, 20.0f, nullptr, io.Fonts->GetGlyphRangesChineseFull());
     io.IniFilename = nullptr;
     io.LogFilename = nullptr;
 
@@ -141,13 +139,11 @@ inline void InitImGui()
     Style.Colors[ImGuiCol_TitleBg] = ImColor(0, 74, 122, 255).Value;
     Style.Colors[ImGuiCol_TitleBgActive] = ImColor(0, 74, 122, 255).Value;
 
-    ImGui_ImplWin32_Init(g_mainWindow);
-    ImGui_ImplDX12_Init(g_dx12Device, g_bufferCounts, DXGI_FORMAT_R8G8B8A8_UNORM,
-        g_dx12DescHeapImGuiRender, g_dx12DescHeapImGuiRender->GetCPUDescriptorHandleForHeapStart(), g_dx12DescHeapImGuiRender->GetGPUDescriptorHandleForHeapStart());
+    ImGui_ImplWin32_Init(g_GuiWindow->hWnd);
+    ImGui_ImplDX12_Init(g_pDX12Device, g_nBufferCounts, DXGI_FORMAT_R8G8B8A8_UNORM,
+        g_pDX12DescHeapImGuiRender, g_pDX12DescHeapImGuiRender->GetCPUDescriptorHandleForHeapStart(), g_pDX12DescHeapImGuiRender->GetGPUDescriptorHandleForHeapStart());
     ImGui_ImplDX12_CreateDeviceObjects();
-    Original_WndProc = (WNDPROC)SetWindowLongPtr(g_mainWindow, GWLP_WNDPROC, (LONG_PTR)HK_WndProc);
-
-    g_ImGuiInit = true;
+    Original_WndProc = (WNDPROC)::SetWindowLongPtr(g_GuiWindow->hWnd, GWLP_WNDPROC, (LONG_PTR)HK_WndProc);
 }
 
 // TODO
@@ -155,79 +151,82 @@ HRESULT WINAPI HK_ResizeBuffers(IDXGISwapChain* pSwapChain, UINT BufferCount, UI
 {
     HRESULT hResult = Original_ResizeBuffers(pSwapChain, BufferCount, Width, Height, NewFormat, SwapChainFlags);
 
-    D3D12_VIEWPORT viewPort{};
-    viewPort.Width = (float)Width;
-    viewPort.Height = (float)Height;
-    viewPort.MinDepth = 0.0f;
-    viewPort.MaxDepth = 1.0f;
-    viewPort.TopLeftX = 0.0f;
-    viewPort.TopLeftY = 0.0f;
-    g_dx12CommandList->RSSetViewports(1, &viewPort);
+    //D3D12_VIEWPORT viewPort{};
+    //viewPort.Width = (float)Width;
+    //viewPort.Height = (float)Height;
+    //viewPort.MinDepth = 0.0f;
+    //viewPort.MaxDepth = 1.0f;
+    //viewPort.TopLeftX = 0.0f;
+    //viewPort.TopLeftY = 0.0f;
+    //g_pDX12CommandList->RSSetViewports(1, &viewPort);
 
     return hResult;
 }
 
 HRESULT WINAPI HK_Present(IDXGISwapChain3* pSwapChain, UINT SyncInterval, UINT Flags)
 {
-    if (!g_ImGuiInit)
+    static bool bImGuiInit = false;
+
+    if (!bImGuiInit)
     {
-        if (SUCCEEDED(pSwapChain->GetDevice(__uuidof(ID3D12Device), (void**)&g_dx12Device)))
+        if (SUCCEEDED(pSwapChain->GetDevice(__uuidof(ID3D12Device), (void**)&g_pDX12Device)))
         {
             DXGI_SWAP_CHAIN_DESC swapChainDesc{};
             pSwapChain->GetDesc(&swapChainDesc);
             swapChainDesc.Flags = DXGI_SWAP_CHAIN_FLAG_ALLOW_MODE_SWITCH;
-            swapChainDesc.OutputWindow = g_mainWindow;
-            swapChainDesc.Windowed = !(GetWindowLongPtr(g_mainWindow, GWL_STYLE) & WS_POPUP) ? true : false;
+            swapChainDesc.OutputWindow = g_GuiWindow->hWnd;
+            swapChainDesc.Windowed = !(GetWindowLongPtr(g_GuiWindow->hWnd, GWL_STYLE) & WS_POPUP) ? true : false;
 
-            g_bufferCounts = swapChainDesc.BufferCount;
-            g_frameContext = new FrameContext[g_bufferCounts];
+            g_nBufferCounts = swapChainDesc.BufferCount;
+            g_pFrameContext = new FrameContext[g_nBufferCounts];
 
             D3D12_DESCRIPTOR_HEAP_DESC descriptorImGuiRender{};
             descriptorImGuiRender.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
-            descriptorImGuiRender.NumDescriptors = g_bufferCounts;
+            descriptorImGuiRender.NumDescriptors = g_nBufferCounts;
             descriptorImGuiRender.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
 
             ID3D12CommandAllocator* d3d12CommandAllocator;
-            if (g_dx12Device->CreateDescriptorHeap(&descriptorImGuiRender, IID_PPV_ARGS(&g_dx12DescHeapImGuiRender)) != S_OK)
+            if (g_pDX12Device->CreateDescriptorHeap(&descriptorImGuiRender, IID_PPV_ARGS(&g_pDX12DescHeapImGuiRender)) != S_OK)
                 return Original_Present(pSwapChain, SyncInterval, Flags);
-            if (g_dx12Device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&d3d12CommandAllocator)) != S_OK)
+            if (g_pDX12Device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&d3d12CommandAllocator)) != S_OK)
                 return Original_Present(pSwapChain, SyncInterval, Flags);
-            for (int i = 0; i < g_bufferCounts; i++)
-                g_frameContext[i].d3d12CommandAllocator = d3d12CommandAllocator;
+            for (int i = 0; i < g_nBufferCounts; i++)
+                g_pFrameContext[i].d3d12CommandAllocator = d3d12CommandAllocator;
 
-            if (g_dx12Device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, d3d12CommandAllocator, NULL, IID_PPV_ARGS(&g_dx12CommandList)) != S_OK || g_dx12CommandList->Close() != S_OK)
+            if (g_pDX12Device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, d3d12CommandAllocator, NULL, IID_PPV_ARGS(&g_pDX12CommandList)) != S_OK || g_pDX12CommandList->Close() != S_OK)
                 return Original_Present(pSwapChain, SyncInterval, Flags);
 
             D3D12_DESCRIPTOR_HEAP_DESC descriptorBackBuffers{};
             descriptorBackBuffers.Type = D3D12_DESCRIPTOR_HEAP_TYPE_RTV;
-            descriptorBackBuffers.NumDescriptors = g_bufferCounts;
+            descriptorBackBuffers.NumDescriptors = g_nBufferCounts;
             descriptorBackBuffers.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_NONE;
             descriptorBackBuffers.NodeMask = 1;
 
-            if (g_dx12Device->CreateDescriptorHeap(&descriptorBackBuffers, IID_PPV_ARGS(&g_dx12DescHeapBackBuffers)) != S_OK)
+            if (g_pDX12Device->CreateDescriptorHeap(&descriptorBackBuffers, IID_PPV_ARGS(&g_pDX12DescHeapBackBuffers)) != S_OK)
                 return Original_Present(pSwapChain, SyncInterval, Flags);
 
-            size_t rtvDescriptorSize = g_dx12Device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
-            D3D12_CPU_DESCRIPTOR_HANDLE rtvHandle = g_dx12DescHeapBackBuffers->GetCPUDescriptorHandleForHeapStart();
+            size_t rtvDescriptorSize = g_pDX12Device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
+            D3D12_CPU_DESCRIPTOR_HANDLE rtvHandle = g_pDX12DescHeapBackBuffers->GetCPUDescriptorHandleForHeapStart();
             ID3D12Resource* pBackBuffer;
-            for (int i = 0; i < g_bufferCounts; i++)
+            for (int i = 0; i < g_nBufferCounts; i++)
             {
-                g_frameContext[i].d3d12DescriptorHandle = rtvHandle;
+                g_pFrameContext[i].d3d12DescriptorHandle = rtvHandle;
                 pSwapChain->GetBuffer(i, IID_PPV_ARGS(&pBackBuffer));
-                g_dx12Device->CreateRenderTargetView(pBackBuffer, nullptr, rtvHandle);
-                g_frameContext[i].mainRenderTargetResource = pBackBuffer;
+                g_pDX12Device->CreateRenderTargetView(pBackBuffer, nullptr, rtvHandle);
+                g_pFrameContext[i].mainRenderTargetResource = pBackBuffer;
                 rtvHandle.ptr += rtvDescriptorSize;
             }
 
             InitImGui();
+            bImGuiInit = true;
         }
     }
-    if (g_GuiWindow->windowStatus & WindowStatus::Exit)
+    if (g_GuiWindow->UIStatus & GuiWindow::Detach)
     {
         ReleaseHook();
         return Original_Present(pSwapChain, SyncInterval, Flags);
     }
-    if (g_dx12CommandQueue == nullptr)
+    if (g_pDX12CommandQueue == nullptr)
         return Original_Present(pSwapChain, SyncInterval, Flags);
 
     ImGui_ImplDX12_NewFrame();
@@ -239,56 +238,55 @@ HRESULT WINAPI HK_Present(IDXGISwapChain3* pSwapChain, UINT SyncInterval, UINT F
 
     ImGui::EndFrame();
 
-    FrameContext& frameContext = g_frameContext[pSwapChain->GetCurrentBackBufferIndex()];
+    FrameContext& frameContext = g_pFrameContext[pSwapChain->GetCurrentBackBufferIndex()];
     frameContext.d3d12CommandAllocator->Reset();
 
-    D3D12_RESOURCE_BARRIER d3d12barrier;
-    d3d12barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-    d3d12barrier.Flags = D3D12_RESOURCE_BARRIER_FLAG_NONE;
-    d3d12barrier.Transition.pResource = frameContext.mainRenderTargetResource;
-    d3d12barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-    d3d12barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_PRESENT;
-    d3d12barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_RENDER_TARGET;
+    D3D12_RESOURCE_BARRIER d3d12Barrier;
+    d3d12Barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+    d3d12Barrier.Flags = D3D12_RESOURCE_BARRIER_FLAG_NONE;
+    d3d12Barrier.Transition.pResource = frameContext.mainRenderTargetResource;
+    d3d12Barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+    d3d12Barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_PRESENT;
+    d3d12Barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_RENDER_TARGET;
 
-    g_dx12CommandList->Reset(frameContext.d3d12CommandAllocator, nullptr);
-    g_dx12CommandList->ResourceBarrier(1, &d3d12barrier);
-    g_dx12CommandList->OMSetRenderTargets(1, &frameContext.d3d12DescriptorHandle, false, nullptr);
-    g_dx12CommandList->SetDescriptorHeaps(1, &g_dx12DescHeapImGuiRender);
+    g_pDX12CommandList->Reset(frameContext.d3d12CommandAllocator, nullptr);
+    g_pDX12CommandList->ResourceBarrier(1, &d3d12Barrier);
+    g_pDX12CommandList->OMSetRenderTargets(1, &frameContext.d3d12DescriptorHandle, false, nullptr);
+    g_pDX12CommandList->SetDescriptorHeaps(1, &g_pDX12DescHeapImGuiRender);
 
     ImGui::Render();
-    ImGui_ImplDX12_RenderDrawData(ImGui::GetDrawData(), g_dx12CommandList);
-    d3d12barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_RENDER_TARGET;
-    d3d12barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_PRESENT;
-    g_dx12CommandList->ResourceBarrier(1, &d3d12barrier);
-    g_dx12CommandList->Close();
-    g_dx12CommandQueue->ExecuteCommandLists(1, reinterpret_cast<ID3D12CommandList* const*>(&g_dx12CommandList));
+    ImGui_ImplDX12_RenderDrawData(ImGui::GetDrawData(), g_pDX12CommandList);
+    d3d12Barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_RENDER_TARGET;
+    d3d12Barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_PRESENT;
+    g_pDX12CommandList->ResourceBarrier(1, &d3d12Barrier);
+    g_pDX12CommandList->Close();
+    g_pDX12CommandQueue->ExecuteCommandLists(1, reinterpret_cast<ID3D12CommandList* const*>(&g_pDX12CommandList));
 
     return Original_Present(pSwapChain, SyncInterval, Flags);
 }
 
 HRESULT WINAPI HK_ExecuteCommandLists(ID3D12CommandQueue* pCommandQueue, UINT NumCommandLists, ID3D12CommandList* const* ppCommandLists)
 {
-    if (!g_dx12CommandQueue)
-        g_dx12CommandQueue = pCommandQueue;
+    if (!g_pDX12CommandQueue)
+        g_pDX12CommandQueue = pCommandQueue;
 
     return Original_ExecuteCommandLists(pCommandQueue, NumCommandLists, ppCommandLists);
 }
 
 DWORD WINAPI Start(LPVOID lpParameter)
 {
-    g_hHinstance = HMODULE(lpParameter);
+    g_hInstance = (HMODULE)lpParameter;
     g_GuiWindow = new GuiWindow();
     g_GuiWindow->Init();
-    g_mainWindow = g_GuiWindow->hwnd;
-    g_hEndEvent = CreateEvent(NULL, FALSE, FALSE, NULL);
+    g_hEndEvent = ::CreateEvent(NULL, FALSE, FALSE, NULL);
 
     WNDCLASSEX windowClass{};
     windowClass.cbSize = sizeof(WNDCLASSEX);
     windowClass.style = CS_HREDRAW | CS_VREDRAW;
-    windowClass.lpfnWndProc = DefWindowProc;
+    windowClass.lpfnWndProc = ::DefWindowProc;
     windowClass.cbClsExtra = 0;
     windowClass.cbWndExtra = 0;
-    windowClass.hInstance = GetModuleHandle(NULL);
+    windowClass.hInstance = ::GetModuleHandle(NULL);
     windowClass.hIcon = NULL;
     windowClass.hCursor = NULL;
     windowClass.hbrBackground = NULL;
@@ -296,23 +294,34 @@ DWORD WINAPI Start(LPVOID lpParameter)
     windowClass.lpszClassName = "DirectX12";
     windowClass.hIconSm = NULL;
 
-    RegisterClassEx(&windowClass);
-    HWND hwnd = CreateWindow(windowClass.lpszClassName, "DirectX12Window", WS_OVERLAPPEDWINDOW, 0, 0, 100, 100, NULL, NULL, windowClass.hInstance, NULL);
+    ::RegisterClassEx(&windowClass);
+    HWND hWnd = ::CreateWindow(
+        windowClass.lpszClassName,
+        "DirectX12Window",
+        WS_OVERLAPPEDWINDOW,
+        0,
+        0,
+        100,
+        100,
+        NULL,
+        NULL,
+        windowClass.hInstance,
+        NULL);
 
-    HMODULE d3d12Module = ::GetModuleHandleA("d3d12.dll");
-    HMODULE dxgiModule = ::GetModuleHandleA("dxgi.dll");
-    if (d3d12Module == NULL || dxgiModule == NULL)
-        return 0xF;
+    HMODULE hD3D12DLL = ::GetModuleHandleA("d3d12.dll");
+    HMODULE hDXGIDLL = ::GetModuleHandleA("dxgi.dll");
+    if (hD3D12DLL == NULL || hDXGIDLL == NULL)
+        return -1;
 
-    IDXGIFactory* dxgiFactory;
-    IDXGIAdapter* dxgiAdapter;
-    ID3D12Device* d3d12Device;
+    IDXGIFactory* pDXGIFactory;
+    IDXGIAdapter* pDXGIAdapter;
+    ID3D12Device* pD3D12Device;
 
-    LPVOID CreateDXGIFactory = ::GetProcAddress(dxgiModule, "CreateDXGIFactory");
-    ((long(__fastcall*)(const IID&, void**))(CreateDXGIFactory))(__uuidof(IDXGIFactory), (void**)&dxgiFactory);
-    dxgiFactory->EnumAdapters(0, &dxgiAdapter);
-    LPVOID D3D12CreateDevice = ::GetProcAddress(d3d12Module, "D3D12CreateDevice");
-    ((long(__fastcall*)(IUnknown*, D3D_FEATURE_LEVEL, const IID&, void**))(D3D12CreateDevice))(dxgiAdapter, D3D_FEATURE_LEVEL_11_0, __uuidof(ID3D12Device), (void**)&d3d12Device);
+    LPVOID CreateDXGIFactory = ::GetProcAddress(hDXGIDLL, "CreateDXGIFactory");
+    ((DWORD(WINAPI*)(const IID&, void**))(CreateDXGIFactory))(__uuidof(IDXGIFactory), (void**)&pDXGIFactory);
+    pDXGIFactory->EnumAdapters(0, &pDXGIAdapter);
+    LPVOID D3D12CreateDevice = ::GetProcAddress(hD3D12DLL, "D3D12CreateDevice");
+    ((DWORD(WINAPI*)(IUnknown*, D3D_FEATURE_LEVEL, const IID&, void**))(D3D12CreateDevice))(pDXGIAdapter, D3D_FEATURE_LEVEL_11_0, __uuidof(ID3D12Device), (void**)&pD3D12Device);
 
     D3D12_COMMAND_QUEUE_DESC queueDesc{};
     queueDesc.Type = D3D12_COMMAND_LIST_TYPE_DIRECT;
@@ -320,14 +329,14 @@ DWORD WINAPI Start(LPVOID lpParameter)
     queueDesc.Flags = D3D12_COMMAND_QUEUE_FLAG_NONE;
     queueDesc.NodeMask = 0;
 
-    ID3D12CommandQueue* d3d12CommandQueue;
-    ID3D12CommandAllocator* d3d12CommandAllocator;
-    ID3D12GraphicsCommandList* d3d12CommandList;
-    IDXGISwapChain* swapChain;
+    ID3D12CommandQueue* pD3D12CommandQueue;
+    ID3D12CommandAllocator* pD3D12CommandAllocator;
+    ID3D12GraphicsCommandList* pD3D12CommandList;
+    IDXGISwapChain* pSwapChain;
 
-    d3d12Device->CreateCommandQueue(&queueDesc, __uuidof(ID3D12CommandQueue), (void**)&d3d12CommandQueue);
-    d3d12Device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, __uuidof(ID3D12CommandAllocator), (void**)&d3d12CommandAllocator);
-    d3d12Device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, d3d12CommandAllocator, NULL, __uuidof(ID3D12GraphicsCommandList), (void**)&d3d12CommandList);
+    pD3D12Device->CreateCommandQueue(&queueDesc, __uuidof(ID3D12CommandQueue), (void**)&pD3D12CommandQueue);
+    pD3D12Device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, __uuidof(ID3D12CommandAllocator), (void**)&pD3D12CommandAllocator);
+    pD3D12Device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, pD3D12CommandAllocator, NULL, __uuidof(ID3D12GraphicsCommandList), (void**)&pD3D12CommandList);
 
     DXGI_SWAP_CHAIN_DESC swapChainDesc{};
     swapChainDesc.BufferDesc.RefreshRate.Numerator = 60;
@@ -342,32 +351,32 @@ DWORD WINAPI Start(LPVOID lpParameter)
     swapChainDesc.BufferCount = 2;
     swapChainDesc.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
     swapChainDesc.Flags = DXGI_SWAP_CHAIN_FLAG_ALLOW_MODE_SWITCH;
-    swapChainDesc.OutputWindow = hwnd;
+    swapChainDesc.OutputWindow = hWnd;
     swapChainDesc.SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD;
     swapChainDesc.Windowed = 1;
 
-    dxgiFactory->CreateSwapChain(d3d12CommandQueue, &swapChainDesc, &swapChain);
+    pDXGIFactory->CreateSwapChain(pD3D12CommandQueue, &swapChainDesc, &pSwapChain);
 
-    g_methodsTable = (DWORD64*)::calloc(150, sizeof(DWORD64));
-    ::memcpy(g_methodsTable, *(DWORD64**)d3d12Device, 44 * sizeof(DWORD64));
-    ::memcpy(g_methodsTable + 44, *(DWORD64**)d3d12CommandQueue, 19 * sizeof(DWORD64));
-    ::memcpy(g_methodsTable + 44 + 19, *(DWORD64**)d3d12CommandAllocator, 9 * sizeof(DWORD64));
-    ::memcpy(g_methodsTable + 44 + 19 + 9, *(DWORD64**)d3d12CommandList, 60 * sizeof(DWORD64));
-    ::memcpy(g_methodsTable + 44 + 19 + 9 + 60, *(DWORD64**)swapChain, 18 * sizeof(DWORD64));
+    g_lpVirtualTable = ::calloc(150, sizeof(QWORD));
+    ::memcpy(g_lpVirtualTable, *(QWORD**)pD3D12Device, 44 * sizeof(QWORD));
+    ::memcpy((QWORD*)g_lpVirtualTable + 44, *(QWORD**)pD3D12CommandQueue, 19 * sizeof(QWORD));
+    ::memcpy((QWORD*)g_lpVirtualTable + 44 + 19, *(QWORD**)pD3D12CommandAllocator, 9 * sizeof(QWORD));
+    ::memcpy((QWORD*)g_lpVirtualTable + 44 + 19 + 9, *(QWORD**)pD3D12CommandList, 60 * sizeof(QWORD));
+    ::memcpy((QWORD*)g_lpVirtualTable + 44 + 19 + 9 + 60, *(QWORD**)pSwapChain, 18 * sizeof(QWORD));
+
+    pD3D12Device->Release();
+    pD3D12CommandQueue->Release();
+    pD3D12CommandAllocator->Release();
+    pD3D12CommandList->Release();
+    pSwapChain->Release();
 
     InitHook();
 
-    d3d12Device->Release();
-    d3d12CommandQueue->Release();
-    d3d12CommandAllocator->Release();
-    d3d12CommandList->Release();
-    swapChain->Release();
-
-    ::DestroyWindow(hwnd);
-    UnregisterClass(windowClass.lpszClassName, windowClass.hInstance);
+    ::DestroyWindow(hWnd);
+    ::UnregisterClass(windowClass.lpszClassName, windowClass.hInstance);
 
     ::WaitForSingleObject(g_hEndEvent, INFINITE);
-    ::FreeLibraryAndExitThread(g_hHinstance, 0);
+    ::FreeLibraryAndExitThread(g_hInstance, 0);
 
     return 0;
 }
