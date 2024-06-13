@@ -13,14 +13,19 @@ GuiWindow::GuiWindow()
 
     // 窗口名称
     std::string strText;
-    strText = strText.append(WINDOWNAME).append(" v") + std::to_string(MAJORVERSION) + std::string().append(".") + std::to_string(MINORVERSION) + std::string().append(".") + std::to_string(REVISIONVERSION);
+    strText = strText.append(WINDOWNAME).append(" v") +
+        std::to_string(MAJORVERSION) +
+        std::string().append(".") +
+        std::to_string(MINORVERSION) +
+        std::string().append(".") +
+        std::to_string(REVISIONVERSION);
     size_t nLength = strText.length() + 1;
     this->WindowName = new char[nLength] {};
     ::memcpy(this->WindowName, strText.c_str(), strText.length());
 
     // 窗口设置
     this->StartPostion = ImVec2(0.0f, 0.0f);
-    this->UIStatus = GuiWindow::Reset;
+    this->UIStatus = GuiStatus::Reset;
 
     // 功能菜单
     this->bCrosshair = false;
@@ -36,16 +41,33 @@ GuiWindow::~GuiWindow()
     delete[] this->WindowName;
 }
 
+static bool CALLBACK EnumHwndCallback(HWND hWnd, LPARAM lParam)
+{
+    const auto isMainWindow = [hWnd]() {
+        return GetWindow(hWnd, GW_OWNER) == nullptr && IsWindowVisible(hWnd);
+        };
+
+    DWORD dwProcessId = 0;
+    GetWindowThreadProcessId(hWnd, &dwProcessId);
+
+    if (GetCurrentProcessId() != dwProcessId || !isMainWindow() || hWnd == GetConsoleWindow())
+        return true;
+
+    *(HWND*)lParam = hWnd;
+
+    return false;
+}
+
 void GuiWindow::Init()
 {
     do
     {
-        this->hWnd = FindWindow(TARGETCLASS, TARGETWINDOW);
-        this->hModule = GetModuleHandle(TARGETMODULE);
-        this->hProcess = ::GetCurrentProcess();
+        ::EnumWindows((WNDENUMPROC)EnumHwndCallback, (LPARAM)&this->hWnd);
         Sleep(200);
-    } while (this->hWnd == NULL || this->hModule == NULL || this->hProcess == NULL);
+    } while (this->hWnd == NULL);
 
+    this->hProcess = ::GetCurrentProcess();
+    this->hModule = ::GetModuleHandle(MODULENAME);
     this->ModuleAddress = (LPBYTE)this->hModule;
 }
 
@@ -75,10 +97,13 @@ void GuiWindow::Update()
         if (ImGui::Checkbox(u8"绘制准星", &this->bCrosshair))
             Toggle_Crosshair(this->bCrosshair);
 
-        const std::string authorInfo = std::string(AUTHORINFO);
+        const std::string authorInfo(AUTHOR);
+        const std::string buildDate = std::string("Build.") + std::string(BUILD_DATE);
         ImVec2 textSize = ImGui::CalcTextSize(authorInfo.c_str());
         ImGui::SetCursorPosY(HEIGHT - textSize.y);
         ImGui::Text(authorInfo.c_str());
+        ImGui::SetCursorPosY(HEIGHT - textSize.y * 2);
+        ImGui::Text(buildDate.c_str());
 
         const std::string hotKey = std::string(u8"INSERT显示/隐藏界面");
         textSize = ImGui::CalcTextSize(hotKey.c_str());
