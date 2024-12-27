@@ -1,15 +1,15 @@
-﻿#include <dxgi.h>
+﻿#include "GuiWindow.h"
+#include "MinHook/include/MinHook.h"
+#include <dxgi.h>
 #include <dxgi1_4.h>
 #include <d3d12.h>
-#include "GuiWindow.h"
-#include "MinHook/include/MinHook.h"
 
 typedef struct TagFrameContext
 {
     ID3D12CommandAllocator* d3d12CommandAllocator;
     ID3D12Resource* mainRenderTargetResource;
     D3D12_CPU_DESCRIPTOR_HANDLE d3d12DescriptorHandle;
-}FrameContext;
+} FrameContext;
 
 extern LRESULT ImGui_ImplWin32_WndProcHandler(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam);
 typedef HRESULT(WINAPI* ExecuteCommandLists)(ID3D12CommandQueue* pCommandQueue, UINT NumCommandLists, ID3D12CommandList* const* ppCommandLists);
@@ -20,39 +20,38 @@ HRESULT WINAPI HK_Present(IDXGISwapChain3* pSwapChain, UINT SyncInterval, UINT F
 HRESULT WINAPI HK_ResizeBuffers(IDXGISwapChain* pSwapChain, UINT BufferCount, UINT Width, UINT Height, DXGI_FORMAT NewFormat, UINT SwapChainFlags);
 LRESULT WINAPI HK_WndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam);
 
-ExecuteCommandLists Original_ExecuteCommandLists;
-Present Original_Present;
-ResizeBuffers Original_ResizeBuffers;
-WNDPROC Original_WndProc;
-HMODULE g_hInstance;
-HANDLE g_hEndEvent;
-LPVOID g_lpVirtualTable;
-GuiWindow* g_GuiWindow;
-FrameContext* g_pFrameContext;
-ID3D12Device* g_pDX12Device;
-ID3D12DescriptorHeap* g_pDX12DescHeapBackBuffers;
-ID3D12DescriptorHeap* g_pDX12DescHeapImGuiRender;
-ID3D12GraphicsCommandList* g_pDX12CommandList;
-ID3D12CommandQueue* g_pDX12CommandQueue;
-size_t g_nBufferCounts = 0;
+ExecuteCommandLists         Original_ExecuteCommandLists;
+Present                     Original_Present;
+ResizeBuffers               Original_ResizeBuffers;
+WNDPROC                     Original_WndProc;
+HMODULE                     g_hInstance;
+HANDLE                      g_hEndEvent;
+ULONG_PTR*                  g_lpVTable;
+GuiWindow*                  g_GuiWindow;
+FrameContext*               g_pFrameContext;
+ID3D12Device*               g_pDX12Device;
+ID3D12DescriptorHeap*       g_pDX12DescHeapBackBuffers;
+ID3D12DescriptorHeap*       g_pDX12DescHeapImGuiRender;
+ID3D12GraphicsCommandList*  g_pDX12CommandList;
+ID3D12CommandQueue*         g_pDX12CommandQueue;
+ULONG_PTR                   g_nBufferCounts = 0;
 
 void InitHook()
 {
-    ULONG_PTR* lpVTable = (ULONG_PTR*)g_lpVirtualTable;
     MH_Initialize();
 
     // ExecuteCommandLists
-    LPVOID lpTarget = (LPVOID)lpVTable[54];
+    LPVOID lpTarget = (LPVOID)g_lpVTable[54];
     MH_CreateHook(lpTarget, HK_ExecuteCommandLists, (void**)&Original_ExecuteCommandLists);
     MH_EnableHook(lpTarget);
 
     // Present
-    lpTarget = (LPVOID)lpVTable[140];
+    lpTarget = (LPVOID)g_lpVTable[140];
     MH_CreateHook(lpTarget, HK_Present, (void**)&Original_Present);
     MH_EnableHook(lpTarget);
 
     // ResizeBuffers
-    //lpTarget = (LPVOID)lpVTable[145];
+    //lpTarget = (LPVOID)g_lpVTable[145];
     //MH_CreateHook(lpTarget, HK_ResizeBuffers, (void**)&Original_ResizeBuffers);
     //MH_EnableHook(lpTarget);
 }
@@ -73,8 +72,8 @@ void ReleaseHook()
     g_pDX12CommandQueue->Release();
 
     delete[] g_pFrameContext;
-    ::free(g_lpVirtualTable);
-    g_lpVirtualTable = nullptr;
+    ::free(g_lpVTable);
+    g_lpVTable = nullptr;
 
     ::SetEvent(g_hEndEvent);
 }
@@ -85,7 +84,7 @@ LRESULT WINAPI HK_WndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
     {
     case WM_KEYDOWN:
         if (wParam == VK_INSERT)
-            g_GuiWindow->bShowMenu = !g_GuiWindow->bShowMenu;
+            g_GuiWindow->showMenu = !g_GuiWindow->showMenu;
         break;
 
     case WM_DESTROY:
@@ -93,7 +92,7 @@ LRESULT WINAPI HK_WndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
         break;
     }
 
-    if (g_GuiWindow->bShowMenu && ImGui_ImplWin32_WndProcHandler(hWnd, uMsg, wParam, lParam))
+    if (g_GuiWindow->showMenu && ImGui_ImplWin32_WndProcHandler(hWnd, uMsg, wParam, lParam))
         return true;
 
     return ::CallWindowProc(Original_WndProc, hWnd, uMsg, wParam, lParam);
@@ -102,45 +101,85 @@ LRESULT WINAPI HK_WndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
 inline void InitImGui()
 {
     ImGui::CreateContext();
+
+    ImFontConfig fontConfig{};
+    fontConfig.GlyphOffset.y = -1.75f;
+
     ImGuiIO& io = ImGui::GetIO();
-    io.ConfigFlags = ImGuiConfigFlags_NoMouseCursorChange;
-    io.Fonts->AddFontFromFileTTF(g_GuiWindow->FontPath, 20.0f, nullptr, io.Fonts->GetGlyphRangesChineseFull());
+    io.Fonts->AddFontFromFileTTF(g_GuiWindow->fontPath.c_str(), FONT_SIZE, &fontConfig);
     io.IniFilename = nullptr;
     io.LogFilename = nullptr;
 
-    ImGuiStyle& Style = ImGui::GetStyle();
-    Style.ButtonTextAlign.y = 0.46f;
-    Style.WindowBorderSize = 0.0f;
-    Style.WindowRounding = 0.0f;
-    Style.WindowPadding.x = 0.0f;
-    Style.WindowPadding.y = 0.0f;
-    Style.FrameRounding = 0.0f;
-    Style.FrameBorderSize = 0.0f;
-    Style.FramePadding.x = 0.0f;
-    Style.FramePadding.y = 0.0f;
-    Style.ChildRounding = 0.0f;
-    Style.ChildBorderSize = 0.0f;
-    Style.GrabRounding = 0.0f;
-    Style.GrabMinSize = 8.0f;
-    Style.PopupBorderSize = 0.0f;
-    Style.PopupRounding = 0.0f;
-    Style.ScrollbarRounding = 0.0f;
-    Style.TabBorderSize = 0.0f;
-    Style.TabRounding = 0.0f;
-    Style.DisplaySafeAreaPadding.x = 0.0f;
-    Style.DisplaySafeAreaPadding.y = 0.0f;
-    Style.Colors[ImGuiCol_WindowBg] = ImVec4(0.0f, 0.0f, 0.0f, 1.0f);
-    Style.Colors[ImGuiCol_ChildBg] = ImVec4(0.0f, 0.0f, 0.0f, 1.0f);
-    Style.Colors[ImGuiCol_PopupBg] = ImVec4(0.0f, 0.0f, 0.0f, 1.0f);
-    Style.Colors[ImGuiCol_FrameBg] = ImColor(0, 74, 122, 100).Value;
-    Style.Colors[ImGuiCol_FrameBgHovered] = ImColor(0, 74, 122, 175).Value;
-    Style.Colors[ImGuiCol_FrameBgActive] = ImColor(0, 74, 122, 255).Value;
-    Style.Colors[ImGuiCol_TitleBg] = ImColor(0, 74, 122, 255).Value;
-    Style.Colors[ImGuiCol_TitleBgActive] = ImColor(0, 74, 122, 255).Value;
+    ImGuiStyle& style = ImGui::GetStyle();
+    style.WindowBorderSize = 0.0f;
+    style.WindowRounding = 0.0f;
+    style.FrameBorderSize = 0.0f;
+    style.FrameRounding = 0.0f;
+    style.PopupRounding = 5.0f;
+    style.ScrollbarRounding = 0.0f;
+    style.GrabRounding = 5.0f;
+    style.TabRounding = 4.0f;
+    style.WindowPadding = ImVec2(10.0f, 5.0f);
+    style.FramePadding = ImVec2(0.0f, 0.0f);
+    style.ItemSpacing = ImVec2(10.0f, 8.0f);
+    style.ItemInnerSpacing = ImVec2(8.0f, 6.0f);
+    style.IndentSpacing = 25.0f;
+    style.ScrollbarSize = 0.0f;
+    style.GrabMinSize = 10.0f;
+    style.ButtonTextAlign = ImVec2(0.5f, 0.50f);
+
+    ImVec4* colors = style.Colors;
+    colors[ImGuiCol_Text] = ImVec4(0.95f, 0.96f, 0.98f, 1.00f);
+    colors[ImGuiCol_TextDisabled] = ImVec4(0.36f, 0.42f, 0.47f, 1.00f);
+    colors[ImGuiCol_WindowBg] = ImVec4(0.11f, 0.15f, 0.17f, 1.00f);
+    colors[ImGuiCol_ChildBg] = ImVec4(0.15f, 0.18f, 0.22f, 1.00f);
+    colors[ImGuiCol_PopupBg] = ImVec4(0.08f, 0.08f, 0.10f, 0.94f);
+    colors[ImGuiCol_Border] = ImVec4(0.31f, 0.31f, 0.31f, 1.00f);
+    colors[ImGuiCol_BorderShadow] = ImVec4(0.00f, 0.00f, 0.00f, 0.00f);
+    colors[ImGuiCol_FrameBg] = ImVec4(0.20f, 0.25f, 0.29f, 1.00f);
+    colors[ImGuiCol_FrameBgHovered] = ImVec4(0.12f, 0.20f, 0.28f, 1.00f);
+    colors[ImGuiCol_FrameBgActive] = ImVec4(0.09f, 0.12f, 0.14f, 1.00f);
+    colors[ImGuiCol_TitleBg] = ImVec4(0.09f, 0.12f, 0.14f, 0.65f);
+    colors[ImGuiCol_TitleBgActive] = ImVec4(0.04f, 0.07f, 0.09f, 1.00f);
+    colors[ImGuiCol_TitleBgCollapsed] = ImVec4(0.00f, 0.00f, 0.00f, 0.51f);
+    colors[ImGuiCol_MenuBarBg] = ImVec4(0.15f, 0.18f, 0.22f, 1.00f);
+    colors[ImGuiCol_ScrollbarBg] = ImVec4(0.02f, 0.02f, 0.02f, 0.53f);
+    colors[ImGuiCol_ScrollbarGrab] = ImVec4(0.20f, 0.25f, 0.29f, 1.00f);
+    colors[ImGuiCol_ScrollbarGrabHovered] = ImVec4(0.18f, 0.22f, 0.25f, 1.00f);
+    colors[ImGuiCol_ScrollbarGrabActive] = ImVec4(0.09f, 0.21f, 0.31f, 1.00f);
+    colors[ImGuiCol_CheckMark] = ImVec4(0.28f, 0.56f, 1.00f, 1.00f);
+    colors[ImGuiCol_SliderGrab] = ImVec4(0.28f, 0.56f, 1.00f, 1.00f);
+    colors[ImGuiCol_SliderGrabActive] = ImVec4(0.37f, 0.61f, 1.00f, 1.00f);
+    colors[ImGuiCol_Button] = ImVec4(0.20f, 0.25f, 0.29f, 1.00f);
+    colors[ImGuiCol_ButtonHovered] = ImVec4(0.28f, 0.56f, 1.00f, 1.00f);
+    colors[ImGuiCol_ButtonActive] = ImVec4(0.06f, 0.53f, 0.98f, 1.00f);
+    colors[ImGuiCol_Header] = ImVec4(0.20f, 0.25f, 0.29f, 1.00f);
+    colors[ImGuiCol_HeaderHovered] = ImVec4(0.26f, 0.59f, 0.98f, 0.80f);
+    colors[ImGuiCol_HeaderActive] = ImVec4(0.26f, 0.59f, 0.98f, 1.00f);
+    colors[ImGuiCol_Separator] = colors[ImGuiCol_Border];
+    colors[ImGuiCol_SeparatorHovered] = ImVec4(0.28f, 0.56f, 1.00f, 0.78f);
+    colors[ImGuiCol_SeparatorActive] = ImVec4(0.28f, 0.56f, 1.00f, 1.00f);
+    colors[ImGuiCol_ResizeGrip] = ImVec4(0.28f, 0.56f, 1.00f, 0.25f);
+    colors[ImGuiCol_ResizeGripHovered] = ImVec4(0.28f, 0.56f, 1.00f, 0.67f);
+    colors[ImGuiCol_ResizeGripActive] = ImVec4(0.28f, 0.56f, 1.00f, 0.95f);
+    colors[ImGuiCol_Tab] = ImVec4(0.20f, 0.25f, 0.29f, 1.00f);
+    colors[ImGuiCol_TabHovered] = ImVec4(0.28f, 0.56f, 1.00f, 0.80f);
+    colors[ImGuiCol_TabActive] = ImVec4(0.28f, 0.56f, 1.00f, 1.00f);
+    colors[ImGuiCol_TabUnfocused] = ImVec4(0.15f, 0.18f, 0.22f, 1.00f);
+    colors[ImGuiCol_TabUnfocusedActive] = ImVec4(0.20f, 0.25f, 0.29f, 1.00f);
+    colors[ImGuiCol_PlotLines] = ImVec4(0.61f, 0.61f, 0.61f, 1.00f);
+    colors[ImGuiCol_PlotLinesHovered] = ImVec4(1.00f, 0.43f, 0.35f, 1.00f);
+    colors[ImGuiCol_PlotHistogram] = ImVec4(0.90f, 0.70f, 0.00f, 1.00f);
+    colors[ImGuiCol_PlotHistogramHovered] = ImVec4(1.00f, 0.60f, 0.00f, 1.00f);
+    colors[ImGuiCol_TextSelectedBg] = ImVec4(0.26f, 0.59f, 0.98f, 0.35f);
+    colors[ImGuiCol_DragDropTarget] = ImVec4(1.00f, 1.00f, 0.00f, 0.90f);
+    colors[ImGuiCol_NavHighlight] = colors[ImGuiCol_HeaderHovered];
+    colors[ImGuiCol_NavWindowingHighlight] = ImVec4(1.00f, 1.00f, 1.00f, 0.70f);
+    colors[ImGuiCol_NavWindowingDimBg] = ImVec4(0.80f, 0.80f, 0.80f, 0.20f);
+    colors[ImGuiCol_ModalWindowDimBg] = ImVec4(0.80f, 0.80f, 0.80f, 0.35f);
 
     ImGui_ImplWin32_Init(g_GuiWindow->hWnd);
-    ImGui_ImplDX12_Init(g_pDX12Device, (int)g_nBufferCounts, DXGI_FORMAT_R8G8B8A8_UNORM,
-        g_pDX12DescHeapImGuiRender, g_pDX12DescHeapImGuiRender->GetCPUDescriptorHandleForHeapStart(), g_pDX12DescHeapImGuiRender->GetGPUDescriptorHandleForHeapStart());
+    ImGui_ImplDX12_Init(g_pDX12Device, (int)g_nBufferCounts, DXGI_FORMAT_R8G8B8A8_UNORM, g_pDX12DescHeapImGuiRender, g_pDX12DescHeapImGuiRender->GetCPUDescriptorHandleForHeapStart(), g_pDX12DescHeapImGuiRender->GetGPUDescriptorHandleForHeapStart());
     ImGui_ImplDX12_CreateDeviceObjects();
     Original_WndProc = (WNDPROC)::SetWindowLongPtr(g_GuiWindow->hWnd, GWLP_WNDPROC, (LONG_PTR)HK_WndProc);
 }
@@ -148,16 +187,14 @@ inline void InitImGui()
 HRESULT WINAPI HK_ResizeBuffers(IDXGISwapChain* pSwapChain, UINT BufferCount, UINT Width, UINT Height, DXGI_FORMAT NewFormat, UINT SwapChainFlags)
 {
     // TODO
-    HRESULT hResult = Original_ResizeBuffers(pSwapChain, BufferCount, Width, Height, NewFormat, SwapChainFlags);
-
-    return hResult;
+    return Original_ResizeBuffers(pSwapChain, BufferCount, Width, Height, NewFormat, SwapChainFlags);
 }
 
 HRESULT WINAPI HK_Present(IDXGISwapChain3* pSwapChain, UINT SyncInterval, UINT Flags)
 {
-    static bool bImGuiInit = false;
+    static bool imGuiInitialized = false;
 
-    if (!bImGuiInit)
+    if (!imGuiInitialized)
     {
         if (SUCCEEDED(pSwapChain->GetDevice(__uuidof(ID3D12Device), (void**)&g_pDX12Device)))
         {
@@ -208,10 +245,10 @@ HRESULT WINAPI HK_Present(IDXGISwapChain3* pSwapChain, UINT SyncInterval, UINT F
             }
 
             InitImGui();
-            bImGuiInit = true;
+            imGuiInitialized = true;
         }
     }
-    if (g_GuiWindow->UIStatus & GuiWindow::Detach)
+    if (g_GuiWindow->uiStatus & static_cast<DWORD>(GuiWindow::GuiState::GuiState_Detach))
     {
         ReleaseHook();
         return Original_Present(pSwapChain, SyncInterval, Flags);
@@ -223,8 +260,10 @@ HRESULT WINAPI HK_Present(IDXGISwapChain3* pSwapChain, UINT SyncInterval, UINT F
     ImGui_ImplWin32_NewFrame();
     ImGui::NewFrame();
 
-    ImGui::ShowDemoWindow();
-    //g_GuiWindow->Update();
+    if (g_GuiWindow->showMenu) {
+        ImGui::ShowDemoWindow();
+        //g_GuiWindow->Update();
+    }
 
     ImGui::EndFrame();
 
@@ -263,12 +302,12 @@ HRESULT WINAPI HK_ExecuteCommandLists(ID3D12CommandQueue* pCommandQueue, UINT Nu
     return Original_ExecuteCommandLists(pCommandQueue, NumCommandLists, ppCommandLists);
 }
 
-DWORD WINAPI Start(LPVOID lpParameter)
+DWORD WINAPI ThreadEntry(LPVOID lpParameter)
 {
     g_hInstance = (HMODULE)lpParameter;
     g_hEndEvent = ::CreateEvent(NULL, FALSE, FALSE, NULL);
     g_GuiWindow = new GuiWindow();
-    g_GuiWindow->Init();
+    g_GuiWindow->Initialize();
 
     WNDCLASSEX windowClass{};
     windowClass.cbSize = sizeof(WNDCLASSEX);
@@ -281,18 +320,18 @@ DWORD WINAPI Start(LPVOID lpParameter)
     windowClass.hCursor = NULL;
     windowClass.hbrBackground = NULL;
     windowClass.lpszMenuName = NULL;
-    windowClass.lpszClassName = "DirectX12";
+    windowClass.lpszClassName = "Dear ImGui DirectX12";
     windowClass.hIconSm = NULL;
 
     ::RegisterClassEx(&windowClass);
     HWND hWnd = ::CreateWindow(
         windowClass.lpszClassName,
-        "DirectX12Window",
+        windowClass.lpszClassName,
         WS_OVERLAPPEDWINDOW,
-        0,
-        0,
-        100,
-        100,
+        CW_USEDEFAULT,
+        CW_USEDEFAULT,
+        CW_USEDEFAULT,
+        CW_USEDEFAULT,
         NULL,
         NULL,
         windowClass.hInstance,
@@ -342,14 +381,14 @@ DWORD WINAPI Start(LPVOID lpParameter)
 
     pDXGIFactory->CreateSwapChain(pD3D12CommandQueue, &swapChainDesc, &pSwapChain);
 
-    g_lpVirtualTable = ::calloc(150, sizeof(ULONG_PTR));
-    if (g_lpVirtualTable)
+    g_lpVTable = (ULONG_PTR*)::calloc(150, sizeof(ULONG_PTR));
+    if (g_lpVTable)
     {
-        ::memcpy(g_lpVirtualTable, *(ULONG_PTR**)pD3D12Device, 44 * sizeof(ULONG_PTR));
-        ::memcpy((ULONG_PTR*)g_lpVirtualTable + 44, *(ULONG_PTR**)pD3D12CommandQueue, 19 * sizeof(ULONG_PTR));
-        ::memcpy((ULONG_PTR*)g_lpVirtualTable + 44 + 19, *(ULONG_PTR**)pD3D12CommandAllocator, 9 * sizeof(ULONG_PTR));
-        ::memcpy((ULONG_PTR*)g_lpVirtualTable + 44 + 19 + 9, *(ULONG_PTR**)pD3D12CommandList, 60 * sizeof(ULONG_PTR));
-        ::memcpy((ULONG_PTR*)g_lpVirtualTable + 44 + 19 + 9 + 60, *(ULONG_PTR**)pSwapChain, 18 * sizeof(ULONG_PTR));
+        ::memcpy(g_lpVTable, *(ULONG_PTR**)pD3D12Device, 44 * sizeof(ULONG_PTR));
+        ::memcpy((ULONG_PTR*)g_lpVTable + 44, *(ULONG_PTR**)pD3D12CommandQueue, 19 * sizeof(ULONG_PTR));
+        ::memcpy((ULONG_PTR*)g_lpVTable + 44 + 19, *(ULONG_PTR**)pD3D12CommandAllocator, 9 * sizeof(ULONG_PTR));
+        ::memcpy((ULONG_PTR*)g_lpVTable + 44 + 19 + 9, *(ULONG_PTR**)pD3D12CommandList, 60 * sizeof(ULONG_PTR));
+        ::memcpy((ULONG_PTR*)g_lpVTable + 44 + 19 + 9 + 60, *(ULONG_PTR**)pSwapChain, 18 * sizeof(ULONG_PTR));
 
         pD3D12Device->Release();
         pD3D12CommandQueue->Release();
@@ -364,6 +403,7 @@ DWORD WINAPI Start(LPVOID lpParameter)
 
     if (g_hEndEvent)
         ::WaitForSingleObject(g_hEndEvent, INFINITE);
+    delete g_GuiWindow;
     ::FreeLibraryAndExitThread(g_hInstance, EXIT_SUCCESS);
 
     return 0;
@@ -374,11 +414,11 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD dwReason, LPVOID lpReserved)
     switch (dwReason)
     {
     case DLL_PROCESS_ATTACH:
-        if (::GetModuleHandleA("d3d12.dll") == NULL)
+        if (::GetModuleHandle("d3d12.dll") == NULL)
             return false;
 
         ::DisableThreadLibraryCalls(hModule);
-        ::CreateThread(NULL, 0, (LPTHREAD_START_ROUTINE)Start, hModule, 0, NULL);
+        ::CreateThread(NULL, 0, (LPTHREAD_START_ROUTINE)ThreadEntry, hModule, 0, NULL);
         break;
 
     case DLL_PROCESS_DETACH:
